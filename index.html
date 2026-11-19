@@ -551,8 +551,16 @@ body.stale > *:not(#ble_bar):not(#ble_hint):not(script):not(style){opacity:.4}
   <div id="beam_grp" style="display:none">
     <div class="grp">IR beam</div>
     <div class="btns">
-      <button data-a="beam">Read beam</button>
+      <button id="btn_beam_read" type="button">Read beam</button>
       <button id="btn_beam_watch" type="button">Watch 20 s</button>
+    </div>
+    <!-- Pita 2026-11-19 「個字好唔明顯」: the answer as a big coloured tile, not
+         a line of text in #msg -- green CLEAR / red BLOCKED, the block count
+         under it during a watch. -->
+    <div id="beam_big" style="display:none;margin-top:8px;padding:14px 10px;border-radius:12px;
+         text-align:center;color:#fff;font-weight:700;font-size:30px;line-height:1.2">
+      <div id="beam_big_main"></div>
+      <div id="beam_big_sub" style="font-size:17px;font-weight:600;margin-top:4px"></div>
     </div>
   </div>
 
@@ -1268,46 +1276,68 @@ document.querySelectorAll("button[data-a]").forEach(function(btn){
   });
 });
 
-/* ---- IR beam watch ----
-   /api/do?a=beam back to back for 20 s.  Each reading powers the receiver and
-   takes ~150 ms on the board, plus the Bluetooth round trip, so this sees about
-   two readings a second: keep a hand in the beam for half a second to be sure
-   it is counted.  A block = a reading that went from clear to BLOCKED. */
-function beamWatch(){
+/* ---- IR beam: Read and Watch ----
+   /api/do?a=beam is one reading (~150 ms on the board, it powers the receiver
+   each time).  Watch calls it back to back for 20 s: with the Bluetooth round
+   trip that is about two readings a second, so a hand has to stay in the beam
+   for half a second to be sure it is counted.  A block = a reading that went
+   from clear to BLOCKED.  The answer goes in the big tile (#beam_big). */
+function beamTile(clear, sub){
+  var big = $("beam_big");
+  big.style.display = "";
+  big.style.background = clear ? "#1a7f37" : "#c0392b";
+  $("beam_big_main").textContent = clear ? "\u2714 CLEAR" : "\u2716 BLOCKED";
+  $("beam_big_sub").textContent = sub || "";
+}
+function beamGrey(text){
+  var big = $("beam_big");
+  big.style.display = "";
+  big.style.background = "#8b98a5";
+  $("beam_big_main").textContent = text;
+  $("beam_big_sub").textContent = "";
+}
+function beamRun(watch){
   if (busy) return;
   busy = true;
   var btns = document.querySelectorAll("button[data-a]");
   btns.forEach(function(b){ b.disabled = true; });
   $("btn_beam_watch").disabled = true;
+  $("btn_beam_read").disabled = true;
   var t0 = Date.now(), blocks = 0, reads = 0, last = null;
   function plural(n){ return n + " block" + (n === 1 ? "" : "s"); }
   function done(text){
     busy = false;
     btns.forEach(function(b){ b.disabled = false; });
     $("btn_beam_watch").disabled = false;
+    $("btn_beam_read").disabled = false;
     say(text);
     poll();
   }
   function step(){
-    var left = 20 - Math.floor((Date.now() - t0) / 1000);
-    if (left <= 0)
+    var left = watch ? 20 - Math.floor((Date.now() - t0) / 1000) : 1;
+    if (left <= 0){
+      if (last !== null) beamTile(last, "done: " + plural(blocks) + " seen");
       return done("\u2713 watch done: " + plural(blocks) + " seen in " + reads + " readings");
+    }
     fetch("/api/do?a=beam", {cache:"no-store"})
       .then(function(r){ return r.json(); })
       .then(function(j){
-        if (!j.ok) return done("\u2717 " + (j.msg || "refused"));
+        if (!j.ok){ beamGrey("no reading"); return done("\u2717 " + (j.msg || "refused")); }
         reads++;
         if (last === true && j.clear === false) blocks++;
         last = j.clear;
-        say((j.clear ? "beam clear" : "beam BLOCKED") + " \u2014 " + plural(blocks) + ", " + left + " s left");
+        if (!watch){ beamTile(j.clear, ""); return done("\u2713 " + (j.msg || "")); }
+        beamTile(j.clear, plural(blocks) + " \u00b7 " + left + " s left");
+        say("watching the beam \u2026 put a hand in it");
         step();
       })
-      .catch(function(){ done("\u2717 the board did not answer"); });
+      .catch(function(){ beamGrey("no answer"); done("\u2717 the board did not answer"); });
   }
-  say("watching the beam \u2026 put a hand in it");
+  say(watch ? "watching the beam \u2026 put a hand in it" : "reading the beam \u2026");
   step();
 }
-$("btn_beam_watch").addEventListener("click", beamWatch);
+$("btn_beam_read").addEventListener("click", function(){ beamRun(false); });
+$("btn_beam_watch").addEventListener("click", function(){ beamRun(true); });
 
 /* ---- the Production check ----
    The steps are in the board's order; marks has one letter for each. */
