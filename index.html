@@ -545,6 +545,17 @@ body.stale > *:not(#ble_bar):not(#ble_hint):not(script):not(style){opacity:.4}
             data-confirm="End the 45-minute lockout and let the schedule open the door?">End lockout</button>
   </div>
 
+  <!-- IR break-beam (Pita 2026-11-19 「可否寫落UI 比我自己試?」).  Rev T only:
+       its pair sits on J4 24-28; a Rev S board reaches its pair through the A1
+       socket, only with the DRV8825 carrier out, so the page does not offer it. -->
+  <div id="beam_grp" style="display:none">
+    <div class="grp">IR beam</div>
+    <div class="btns">
+      <button data-a="beam">Read beam</button>
+      <button id="btn_beam_watch" type="button">Watch 20 s</button>
+    </div>
+  </div>
+
   <div class="grp">board</div>
   <div class="btns">
     <button data-a="lcd_on">LCD on</button>
@@ -954,15 +965,24 @@ function render(s){
   var v = (b.volts === undefined) ? null : b.volts;
   $("v_batt").textContent = (v === null) ? "--" : v.toFixed(2) + " V";
   var note = " ";
-  if (v !== null){
+  $("beam_grp").style.display = (b.rev === "T") ? "" : "none";
+  if (b.rev === "T"){
+    document.title = "FoxBait Rev T";
+    /* Rev T is one cell or three D cells.  3.5 V is where servos stop with a
+       radio on, and the % comes from the gauge or the D-cell estimate. */
+    if (b.pct >= 0)  note = b.pct + " %" + (b.mah >= 0 ? ", " + b.mah + " mAh left" : "");
+    else             note = "no pack reading";
+    if (v !== null && v > 0 && v < 3.5) note += " — low, no moves with a radio on";
+  } else if (v !== null){
     if (v < 6.0)      note = "USB only — no pack";
     else if (v < 8.2) note = "below 8.2 V — dispense refused";
     else if (v < 9.6) note = "low";
     else              note = b.calibrated ? "ok" : "ok (uncalibrated ADC)";
   }
   $("v_battnote").textContent = note;
-  $("pack").setAttribute("fill", (v !== null && v >= 8.2) ? "#1a7f37"
-                               : (v !== null && v >= 6.0) ? "#c0392b" : "#8b98a5");
+  var okV = (b.rev === "T") ? 3.5 : 8.2, lowV = (b.rev === "T") ? 0.1 : 6.0;
+  $("pack").setAttribute("fill", (v !== null && v >= okV) ? "#1a7f37"
+                               : (v !== null && v >= lowV) ? "#c0392b" : "#8b98a5");
 
   /* How to get back in, in words, from the board's own setting.  Writing the
      number into the page would put it in two places, and two places is how a
@@ -1247,6 +1267,47 @@ document.querySelectorAll("button[data-a]").forEach(function(btn){
     else   runAction(btn);
   });
 });
+
+/* ---- IR beam watch ----
+   /api/do?a=beam back to back for 20 s.  Each reading powers the receiver and
+   takes ~150 ms on the board, plus the Bluetooth round trip, so this sees about
+   two readings a second: keep a hand in the beam for half a second to be sure
+   it is counted.  A block = a reading that went from clear to BLOCKED. */
+function beamWatch(){
+  if (busy) return;
+  busy = true;
+  var btns = document.querySelectorAll("button[data-a]");
+  btns.forEach(function(b){ b.disabled = true; });
+  $("btn_beam_watch").disabled = true;
+  var t0 = Date.now(), blocks = 0, reads = 0, last = null;
+  function plural(n){ return n + " block" + (n === 1 ? "" : "s"); }
+  function done(text){
+    busy = false;
+    btns.forEach(function(b){ b.disabled = false; });
+    $("btn_beam_watch").disabled = false;
+    say(text);
+    poll();
+  }
+  function step(){
+    var left = 20 - Math.floor((Date.now() - t0) / 1000);
+    if (left <= 0)
+      return done("\u2713 watch done: " + plural(blocks) + " seen in " + reads + " readings");
+    fetch("/api/do?a=beam", {cache:"no-store"})
+      .then(function(r){ return r.json(); })
+      .then(function(j){
+        if (!j.ok) return done("\u2717 " + (j.msg || "refused"));
+        reads++;
+        if (last === true && j.clear === false) blocks++;
+        last = j.clear;
+        say((j.clear ? "beam clear" : "beam BLOCKED") + " \u2014 " + plural(blocks) + ", " + left + " s left");
+        step();
+      })
+      .catch(function(){ done("\u2717 the board did not answer"); });
+  }
+  say("watching the beam \u2026 put a hand in it");
+  step();
+}
+$("btn_beam_watch").addEventListener("click", beamWatch);
 
 /* ---- the Production check ----
    The steps are in the board's order; marks has one letter for each. */
