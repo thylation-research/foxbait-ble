@@ -685,6 +685,16 @@ body.stale > *:not(#ble_bar):not(#ble_hint):not(script):not(style){opacity:.4}
       <button data-a="bait_save_home"  class="warn" data-confirm="Save where the arm is now as the HOME position?">Set as HOME</button>
       <button data-a="bait_save_throw" class="warn" data-confirm="Save where the arm is now as the THROW position?">Set as THROW</button>
     </div>
+    <!-- Bench (Pita 2026-11-24): 5 V on the servo leads with no pulse, for a
+         meter; and the arm swung home <-> throw five times without typing.
+         btn_rail's data-a is rewritten in renderAngles() from s.servo_rail,
+         the one-button shape of btn_hold.  Swing is the page sending
+         bait_park itself, so a board that resets mid-swing shows up as
+         "did not answer" at the step it happened. -->
+    <div class="btns" style="margin-top:8px">
+      <button id="btn_rail" data-a="rail_on">Servo 5V ON</button>
+      <button id="btn_swing">Swing &times;5</button>
+    </div>
   </div>
 </div>
 
@@ -1067,7 +1077,7 @@ function render(s){
      door_deg is where the iris IS; door_open_deg / door_close_deg are what the
      board has been told those positions MEAN.  Both are shown because the gap
      between them is exactly what you are closing. */
-  renderAngles(a, known);
+  renderAngles(a, known, s.servo_rail);
   renderVerticalDoor(a);
   renderVerticalDiagram(a, s);
 
@@ -1341,6 +1351,55 @@ function beamRun(watch){
   say(watch ? "watching the beam \u2026 put a hand in it" : "reading the beam \u2026");
   step();
 }
+/* ---- the dispenser arm: Swing x5 ----
+   home -> throw -> home five times, 1.5 s at each end, using the board's
+   saved angles.  Pressing it again while it runs stops after the current
+   step.  Each bait_park also re-arms the board's 60 s hold, so the rail
+   stays up for the whole swing. */
+var armHome, armThrow, swingStop = false, swinging = false;
+function swingRun(){
+  if (swinging){ swingStop = true; return; }
+  if (busy) return;
+  if (armHome === undefined || armHome === armThrow){
+    say("\u2717 home and throw are not set apart -- nothing to swing between");
+    return;
+  }
+  busy = true; swinging = true; swingStop = false;
+  var btns = document.querySelectorAll("button[data-a]");
+  btns.forEach(function(b){ b.disabled = true; });
+  var sb = $("btn_swing");
+  sb.textContent = "Stop swing";
+  var steps = [], i;
+  for (i = 0; i < 5; i++){ steps.push(armThrow); steps.push(armHome); }
+  var n = 0;
+  function done(text){
+    busy = false; swinging = false;
+    btns.forEach(function(b){ b.disabled = false; });
+    sb.innerHTML = "Swing &times;5";
+    say(text);
+    poll();
+  }
+  function step(){
+    if (swingStop) return done("\u2713 swing stopped after " + Math.floor(n / 2) + " of 5");
+    if (n >= steps.length) return done("\u2713 swing done: 5 of 5, arm back at " + armHome + "\u00b0");
+    var d = steps[n];
+    fetch("/api/do?a=bait_park&d=" + d, {cache:"no-store"})
+      .then(function(r){ return r.json(); })
+      .then(function(j){
+        if (!j.ok) return done("\u2717 swing " + (Math.floor(n / 2) + 1) + ": " + (j.msg || "refused"));
+        n++;
+        say("swinging " + Math.ceil(n / 2) + " of 5 \u2026 arm to " + d + "\u00b0");
+        setTimeout(step, 1500);
+      })
+      .catch(function(){
+        done("\u2717 the board did not answer at swing " + (Math.floor(n / 2) + 1)
+             + " (" + d + "\u00b0) -- did it restart?");
+      });
+  }
+  step();
+}
+$("btn_swing").addEventListener("click", swingRun);
+
 $("btn_beam_read").addEventListener("click", function(){ beamRun(false); });
 $("btn_beam_watch").addEventListener("click", function(){ beamRun(true); });
 
@@ -1619,7 +1678,7 @@ $("btn_cfg").addEventListener("click", function(){
    vertical  the door is continuous-rotation and has no angle at all; the
              dispenser ARM is what has angles there, and both of its ends ship
              as placeholders that have to be found on the mechanism. */
-function renderAngles(a, known){
+function renderAngles(a, known, rail){
   var vertical = (a.machine === "vertical");
   $("angle_door").style.display = vertical ? "none" : "block";
   $("angle_bait").style.display = vertical ? "block" : "none";
@@ -1629,6 +1688,12 @@ function renderAngles(a, known){
     /* There is no live readback for the arm: servo_last_deg() is not in the
        state document, and inventing one from the saved values would be a
        number that looks measured and is not. */
+    armHome = a.bait_home_deg; armThrow = a.bait_throw_deg;
+    var rb = $("btn_rail");
+    rb.setAttribute("data-a", rail ? "rail_off" : "rail_on");
+    rb.textContent = rail
+        ? ("Servo 5V OFF" + (a.door_hold_s ? (" (" + Math.ceil(a.door_hold_s / 60) + " min left)") : ""))
+        : "Servo 5V ON";
     $("v_deg").textContent = "—";
     $("v_degnote").textContent =
         (a.bait_home_deg === undefined) ? " "
