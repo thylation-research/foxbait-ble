@@ -165,11 +165,16 @@ body.stale > *:not(#ble_bar):not(#ble_hint):not(script):not(style){opacity:.4}
     if (dev && dev.gatt.connected) { dev.gatt.disconnect(); return; }
     try {
       bar("Looking for boards…");
-      if (!dev) {
-        dev = await navigator.bluetooth.requestDevice({
-          filters: [{namePrefix: "FBT-"}], optionalServices: [NUS]});
-        dev.addEventListener("gattserverdisconnected", dropped);
+      // Always scan and let the user pick the board: forget the last one first,
+      // otherwise Connect silently goes back to it (Pita 2026-11-23).
+      if (dev) {
+        dev.removeEventListener("gattserverdisconnected", dropped);
+        dev = null;
       }
+      var picked = await navigator.bluetooth.requestDevice({
+        filters: [{namePrefix: "FBT-"}], optionalServices: [NUS]});
+      picked.addEventListener("gattserverdisconnected", dropped);
+      dev = picked;
       bar("Connecting to " + dev.name + "…");
       var svc = await (await dev.gatt.connect()).getPrimaryService(NUS);
       var r = await svc.getCharacteristic(RX);

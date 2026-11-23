@@ -138,11 +138,16 @@ async function connect(){
   if (dev && dev.gatt.connected){ dev.gatt.disconnect(); return; }
   try {
     st("Looking for boards…");
-    if (!dev) {
-      dev = await navigator.bluetooth.requestDevice({
-        filters: [{namePrefix: "FBT-"}], optionalServices: [NUS]});
-      dev.addEventListener("gattserverdisconnected", disconnected);
+    // Always scan and let the user pick the board: forget the last one first,
+    // otherwise Connect silently goes back to it (Pita 2026-11-23).
+    if (dev) {
+      dev.removeEventListener("gattserverdisconnected", disconnected);
+      dev = null;
     }
+    var picked = await navigator.bluetooth.requestDevice({
+      filters: [{namePrefix: "FBT-"}], optionalServices: [NUS]});
+    picked.addEventListener("gattserverdisconnected", disconnected);
+    dev = picked;
     st("Connecting to " + dev.name + "…");
     var srv = await dev.gatt.connect();
     var svc = await srv.getPrimaryService(NUS);
