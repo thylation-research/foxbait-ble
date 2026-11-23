@@ -130,8 +130,35 @@ function send(line){
 function disconnected(){
   rx = null; busy = false; queue = [];
   setEnabled(false);
+  if (linking) return;   // a drop inside connect(): it retries and says so itself
   $("bconn").textContent = "Connect";
   st("Disconnected. The board drops Bluetooth when it goes to sleep -- press its button, then Connect.", "bad");
+}
+
+/* Connect and find the console service, retrying when the link drops in
+   between (Pita 2026-11-24, "GATT Server is disconnected. Cannot retrieve
+   services").  Same rule as ble_shim.html: up to 3 retries, 0.5 / 1 / 2 s. */
+var linking = false, RETRY_MS = [500, 1000, 2000];
+function wait(ms){ return new Promise(function(r){ setTimeout(r, ms); }); }
+async function linkUp(d){
+  linking = true;
+  try {
+    for (var i = 0; ; i++) {
+      try {
+        var svc = await (await d.gatt.connect()).getPrimaryService(NUS);
+        var r = await svc.getCharacteristic(RX);
+        var t = await svc.getCharacteristic(TX);
+        await t.startNotifications();
+        t.addEventListener("characteristicvaluechanged", onNotify);
+        return r;
+      } catch (e) {
+        if (i >= RETRY_MS.length) throw e;
+        try { if (d.gatt.connected) d.gatt.disconnect(); } catch (_) {}
+        st("Link dropped while connecting -- retrying " + (i + 2) + "/" + (RETRY_MS.length + 1) + "…");
+        await wait(RETRY_MS[i]);
+      }
+    }
+  } finally { linking = false; }
 }
 
 async function connect(){
@@ -149,12 +176,7 @@ async function connect(){
     picked.addEventListener("gattserverdisconnected", disconnected);
     dev = picked;
     st("Connecting to " + dev.name + "…");
-    var srv = await dev.gatt.connect();
-    var svc = await srv.getPrimaryService(NUS);
-    rx = await svc.getCharacteristic(RX);
-    var tx = await svc.getCharacteristic(TX);
-    await tx.startNotifications();
-    tx.addEventListener("characteristicvaluechanged", onNotify);
+    rx = await linkUp(dev);
     $("name").textContent = dev.name;
     $("bconn").textContent = "Disconnect";
     st("Connected to " + dev.name + ".", "ok");

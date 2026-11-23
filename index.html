@@ -157,8 +157,39 @@ body.stale > *:not(#ble_bar):not(#ble_hint):not(script):not(style){opacity:.4}
     var err = new Error("Bluetooth disconnected");
     if (cur) finish(err);
     while (q.length) q.shift().rej(err);
+    if (linking) return;   // a drop inside connect(): it retries and says so itself
     document.getElementById("ble_btn").textContent = "Connect";
     bar("Disconnected -- the board drops Bluetooth when it sleeps. Press its button, then Connect.", true);
+  }
+
+  /*
+   * Connect and find the console service, retrying when the link drops in
+   * between (Pita 2026-11-24: "GATT Server is disconnected. Cannot retrieve
+   * services" seen often).  That error is the board or the phone dropping the
+   * link in its first second; a second try usually lands.  Up to 3 retries,
+   * 0.5 / 1 / 2 s apart; the last error is thrown as before.
+   */
+  var linking = false, RETRY_MS = [500, 1000, 2000];
+  function wait(ms){ return new Promise(function(r){ setTimeout(r, ms); }); }
+  async function linkUp(d){
+    linking = true;
+    try {
+      for (var i = 0; ; i++) {
+        try {
+          var svc = await (await d.gatt.connect()).getPrimaryService(NUS);
+          var r = await svc.getCharacteristic(RX);
+          var t = await svc.getCharacteristic(TX);
+          await t.startNotifications();
+          t.addEventListener("characteristicvaluechanged", onNotify);
+          return r;
+        } catch (e) {
+          if (i >= RETRY_MS.length) throw e;
+          try { if (d.gatt.connected) d.gatt.disconnect(); } catch (_) {}
+          bar("Link dropped while connecting -- retrying " + (i + 2) + "/" + (RETRY_MS.length + 1) + "…");
+          await wait(RETRY_MS[i]);
+        }
+      }
+    } finally { linking = false; }
   }
 
   async function connect(){
@@ -176,12 +207,7 @@ body.stale > *:not(#ble_bar):not(#ble_hint):not(script):not(style){opacity:.4}
       picked.addEventListener("gattserverdisconnected", dropped);
       dev = picked;
       bar("Connecting to " + dev.name + "…");
-      var svc = await (await dev.gatt.connect()).getPrimaryService(NUS);
-      var r = await svc.getCharacteristic(RX);
-      var t = await svc.getCharacteristic(TX);
-      await t.startNotifications();
-      t.addEventListener("characteristicvaluechanged", onNotify);
-      rx = r;
+      rx = await linkUp(dev);
       document.getElementById("ble_btn").textContent = "Disconnect";
       bar("Bluetooth: " + dev.name);
       if (typeof poll === "function") poll();
